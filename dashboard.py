@@ -19,6 +19,34 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deals.db")
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Ensure tables exist (for fresh deploys with no DB yet)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS deals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT, external_id TEXT, url TEXT, address TEXT,
+            city TEXT, state TEXT, zip_code TEXT, units INTEGER,
+            year_built INTEGER, property_class TEXT, price REAL,
+            price_per_unit REAL, cap_rate_listed REAL, occupancy_rate REAL,
+            days_on_market INTEGER, gross_monthly_rent REAL, annual_noi REAL,
+            calc_cap_rate REAL, calc_coc REAL, calc_va_coc REAL,
+            calc_irr_5yr REAL, calc_equity_multiple REAL, calc_noi REAL,
+            calc_dscr REAL, calc_grm REAL, calc_exit_value REAL,
+            ai_recommendation TEXT, ai_one_line TEXT, ai_summary TEXT,
+            ai_risks TEXT, ai_opportunities TEXT, ai_due_diligence TEXT,
+            ai_full_memo TEXT, red_flags TEXT, value_add_signals TEXT,
+            passes_hurdle INTEGER DEFAULT 0, hurdle_reason TEXT,
+            first_seen TEXT, last_seen TEXT, last_alerted TEXT,
+            alert_count INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
+            UNIQUE(source, external_id)
+        );
+        CREATE TABLE IF NOT EXISTS run_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT, deals_found INTEGER DEFAULT 0,
+            deals_analyzed INTEGER DEFAULT 0, deals_qualified INTEGER DEFAULT 0,
+            deals_alerted INTEGER DEFAULT 0, sources_scraped TEXT,
+            errors TEXT, duration_seconds REAL
+        );
+    """)
     return conn
 
 
@@ -449,6 +477,7 @@ TEMPLATE = """
 
 
 if __name__ == "__main__":
-    print("\n  DFW Deal Agent — Dashboard")
-    print("  http://localhost:5050\n")
-    app.run(host="0.0.0.0", port=5050, debug=True)
+    port = int(os.environ.get("PORT", 5050))
+    print(f"\n  DFW Deal Agent — Dashboard")
+    print(f"  http://localhost:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=True)
