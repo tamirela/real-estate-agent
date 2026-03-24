@@ -233,6 +233,17 @@ def run_agent() -> dict:
     logger.info(f"  Errors:    {len(stats['errors'])}")
     logger.info(f"{'='*60}\n")
 
+    # ── STEP 7: ALWAYS SEND STATUS EMAIL ──────────────────────────────────────
+    # So you know the bot ran, even when 0 deals qualify
+    if EMAIL_CONFIG.get("send_empty_run_summary") and not deals_to_alert:
+        try:
+            db_stats = tracker.get_stats()
+            top_deals = tracker.get_all_active_qualifying()
+            emailer.send_daily_summary(db_stats, top_deals[:10])
+            logger.info("Status email sent (no new deals, but bot is alive)")
+        except Exception as e:
+            logger.error(f"Status email failed: {e}")
+
     return stats
 
 

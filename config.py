@@ -93,7 +93,7 @@ EMAIL_CONFIG = {
     "gmail_app_password": os.getenv("GMAIL_APP_PASSWORD", ""),  # Gmail app password
     "smtp_host": "smtp.gmail.com",
     "smtp_port": 587,
-    "send_empty_run_summary": False,    # Don't email if 0 deals found
+    "send_empty_run_summary": True,     # Always email so you know bot is alive
     "alert_on_price_drop": True,        # Alert when tracked deal drops in price
     "alert_on_new_deal": True,
 }
