@@ -10,13 +10,8 @@ from scrapers.base import BaseScraper, RawListing
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://silvamultifamily.com/"
-LISTINGS_PATHS = [
-    "listings/",
-    "properties/",
-    "available-properties/",
-    "current-offerings/",
-    "",  # Main page may have listings
-]
+# The actual listings page is /availableproperties (no hyphen, no trailing slash).
+LISTINGS_URL = "https://silvamultifamily.com/availableproperties"
 
 
 class SilvaMultifamilyScraper(BaseScraper):
@@ -25,166 +20,132 @@ class SilvaMultifamilyScraper(BaseScraper):
     def scrape(self, markets: Optional[list] = None) -> list:
         all_listings: List[RawListing] = []
 
-        # Try multiple possible listing pages
-        for path in LISTINGS_PATHS:
-            url = BASE_URL + path
-            resp = self.get(url)
-            if resp is None:
-                continue
-
-            soup = BeautifulSoup(resp.text, "html.parser")
-            cards = self._find_property_cards(soup)
-
-            if cards:
-                logger.info(f"[SilvaMultifamily] Found {len(cards)} cards on {url}")
-                for card in cards:
-                    parsed = self._parse_card(card, url)
-                    if parsed is not None:
-                        all_listings.append(parsed)
-                break  # Found listings, no need to try other paths
-
-        # If no structured cards found, try parsing links that look like property pages
-        if not all_listings:
-            resp = self.get(BASE_URL)
-            if resp:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                property_links = self._find_property_links(soup)
-                for link_url, link_text in property_links:
-                    parsed = self._scrape_detail_page(link_url, link_text)
-                    if parsed is not None:
-                        all_listings.append(parsed)
-
-        logger.info(f"[SilvaMultifamily] Found {len(all_listings)} listings")
-        return all_listings
-
-    @staticmethod
-    def _find_property_cards(soup):
-        """Try common WordPress property card selectors."""
-        selectors = [
-            "article",
-            ".property-card",
-            ".listing-card",
-            ".property-item",
-            ".property",
-            ".listing",
-            "[class*='property']",
-            "[class*='listing']",
-            ".entry-content .wp-block-group",
-            ".elementor-widget-container",
-        ]
-        for sel in selectors:
-            cards = soup.select(sel)
-            # Filter out navigation/header/footer articles
-            cards = [c for c in cards if len(c.get_text(strip=True)) > 30]
-            if cards:
-                return cards
-        return []
-
-    @staticmethod
-    def _find_property_links(soup) -> list:
-        """Find links that look like they point to property detail pages."""
-        results = []
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-            text = a_tag.get_text(strip=True)
-            # Look for links with property-related keywords
-            if any(kw in href.lower() for kw in ["property", "listing", "unit", "apartment"]):
-                if href.startswith("/"):
-                    href = "https://silvamultifamily.com" + href
-                if href.startswith("http"):
-                    results.append((href, text))
-        return results[:20]  # Cap at 20 to be polite
-
-    def _scrape_detail_page(self, url: str, link_text: str) -> Optional[RawListing]:
-        """Scrape a property detail page for listing data."""
-        resp = self.get(url)
+        resp = self.get(LISTINGS_URL)
         if resp is None:
-            return None
+            logger.warning("[SilvaMultifamily] No response from %s", LISTINGS_URL)
+            return all_listings
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        full_text = soup.get_text(" ", strip=True)
 
-        # Check if page has any property-related content
-        if not any(kw in full_text.lower() for kw in ["unit", "price", "sqft", "sq ft", "apartment", "multifamily"]):
+        # Each property is a Bootstrap card: div.card.border-color-dark
+        cards = soup.select("div.card.border-color-dark")
+
+        if not cards:
+            logger.warning("[SilvaMultifamily] No property cards found on %s", LISTINGS_URL)
+            return all_listings
+
+        logger.info("[SilvaMultifamily] Found %d cards on %s", len(cards), LISTINGS_URL)
+
+        for card in cards:
+            parsed = self._parse_card(card)
+            if parsed is not None:
+                all_listings.append(parsed)
+
+        logger.info("[SilvaMultifamily] Parsed %d listings", len(all_listings))
+        return all_listings
+
+    def _parse_card(self, card) -> Optional[RawListing]:
+        """Parse a single div.card element into a RawListing.
+
+        Structure:
+          <div class="card border-color-dark mb-3">
+            <div class="card-body">
+              <div class="row">
+                <div class="col-lg-7">
+                  <h4 class="text-white font-weight-bold m-0">Property Name</h4>
+                  <h3 class="font-weight-bold">Under Contract</h3>  (optional)
+                  <img src="assets/NNN_bannerimage.jpg">
+                </div>
+                <div class="col-lg-5">
+                  <table class="table">
+                    <tr><th>City/State</th><td>Dallas, TX</td></tr>
+                    <tr><th>Price Guidance</th><td>TBD by Market</td></tr>
+                    <tr><th># of Units</th><td>216</td></tr>
+                    <tr><th>Sq. ft.</th><td>151,740</td></tr>
+                    <tr><th>Year Built</th><td>1984</td></tr>
+                    <tr><th>Call For Offers Date</th><td>1/29/2026</td></tr>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        """
+        # --- property name from h4 ---
+        h4 = card.find("h4")
+        property_name = h4.get_text(strip=True) if h4 else ""
+        if not property_name:
             return None
 
-        property_name = link_text or self._extract_title(soup)
-        address = self._extract_address(soup, full_text) or property_name
-        city, state, zip_code = self._parse_location(full_text)
+        # --- status (e.g. "Under Contract") from h3 ---
+        h3 = card.find("h3")
+        status = h3.get_text(strip=True) if h3 else "Active"
 
-        if not property_name and not address:
-            return None
+        # --- structured data from the table ---
+        table_data = {}
+        table = card.find("table")
+        if table:
+            for row in table.find_all("tr"):
+                th = row.find("th")
+                td = row.find("td")
+                if th and td:
+                    key = th.get_text(strip=True).lower()
+                    val = td.get_text(strip=True)
+                    table_data[key] = val
 
-        external_id = f"silva-{property_name or address}".replace(" ", "-").lower()[:80]
+        city_state_raw = table_data.get("city/state", "")
+        city, state, zip_code = self._parse_location_field(city_state_raw)
+        units = self._safe_int(table_data.get("# of units", ""))
+        sqft = self._safe_int(table_data.get("sq. ft.", ""))
+        year_built = self._safe_int(table_data.get("year built", ""))
+        if year_built and not (1900 <= year_built <= 2030):
+            year_built = None
 
-        return RawListing(
-            source="silva_multifamily",
-            external_id=external_id,
-            url=url,
-            address=address or property_name,
-            city=city or "",
-            state=state or "TX",
-            zip_code=zip_code or "",
-            price=self._extract_price(full_text) or 0.0,
-            units=self._extract_units(full_text) or 0,
-            year_built=self._extract_year_built(full_text),
-            gross_monthly_rent=None,
-            annual_noi=None,
-            cap_rate_listed=self._extract_cap_rate(full_text),
-            price_per_unit=None,
-            sqft=self._extract_sqft(full_text),
-            lot_sqft=None,
-            description=full_text[:500],
-            listing_date=None,
-            days_on_market=None,
-            property_class=None,
-            occupancy_rate=None,
-            raw_data={},
-        )
+        price_raw = table_data.get("price guidance", "")
+        price = self._parse_price(price_raw)
 
-    def _parse_card(self, card, page_url: str) -> Optional[RawListing]:
-        """Parse a single property card element."""
-        link_tag = card.find("a", href=True)
-        url = link_tag["href"] if link_tag else page_url
+        offers_date = table_data.get("call for offers date", "")
+
+        # --- deal room link ---
+        deal_link = card.find("a", href=True)
+        url = deal_link["href"] if deal_link else LISTINGS_URL
         if url and not url.startswith("http"):
-            url = "https://silvamultifamily.com" + url
+            url = "https://silvamultifamily.com/" + url.lstrip("/")
 
-        title_tag = card.find(["h2", "h3", "h4"])
-        property_name = title_tag.get_text(strip=True) if title_tag else ""
+        external_id = f"silva-{property_name}".replace(" ", "-").lower()[:80]
 
-        full_text = card.get_text(" ", strip=True)
-
-        address = self._extract_address(card, full_text) or property_name
-        city, state, zip_code = self._parse_location(full_text)
-
-        if not property_name and not address:
-            return None
-
-        external_id = f"silva-{property_name or address}".replace(" ", "-").lower()[:80]
+        desc_parts = [property_name, city_state_raw, f"{units or '?'} units"]
+        if sqft:
+            desc_parts.append(f"{sqft:,} sqft")
+        if year_built:
+            desc_parts.append(f"built {year_built}")
+        if status and status != "Active":
+            desc_parts.append(f"({status})")
+        if offers_date:
+            desc_parts.append(f"offers due {offers_date}")
 
         return RawListing(
             source="silva_multifamily",
             external_id=external_id,
             url=url,
-            address=address or property_name,
+            address=property_name,  # Silva uses property names, not street addresses
             city=city or "",
             state=state or "TX",
             zip_code=zip_code or "",
-            price=self._extract_price(full_text) or 0.0,
-            units=self._extract_units(full_text) or 0,
-            year_built=self._extract_year_built(full_text),
+            price=price or 0.0,
+            units=units or 0,
+            year_built=year_built,
             gross_monthly_rent=None,
             annual_noi=None,
-            cap_rate_listed=self._extract_cap_rate(full_text),
+            cap_rate_listed=None,
             price_per_unit=None,
-            sqft=self._extract_sqft(full_text),
+            sqft=sqft,
             lot_sqft=None,
-            description=full_text[:500],
+            description=" | ".join(desc_parts),
             listing_date=None,
             days_on_market=None,
             property_class=None,
             occupancy_rate=None,
-            raw_data={},
+            raw_data={"status": status, "offers_date": offers_date, **table_data},
         )
 
     # ──────────────────────────────────────────────
@@ -192,75 +153,31 @@ class SilvaMultifamilyScraper(BaseScraper):
     # ──────────────────────────────────────────────
 
     @staticmethod
-    def _extract_title(soup) -> str:
-        title = soup.find("h1")
-        if title:
-            return title.get_text(strip=True)
-        og_title = soup.find("meta", property="og:title")
-        if og_title:
-            return og_title.get("content", "")
-        return ""
-
-    @staticmethod
-    def _extract_address(element, text: str) -> Optional[str]:
-        """Try to extract street address."""
-        # Look for address-classed element
-        addr_el = element.find(class_=re.compile(r"address|street|location", re.I))
-        if addr_el:
-            return addr_el.get_text(strip=True)
-        # Try regex for street address pattern
-        match = re.search(r'\d+\s+[A-Za-z\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Dr|Drive|Rd|Road|Ln|Lane|Ct|Court|Way|Pkwy|Parkway)', text)
-        if match:
-            return match.group(0).strip()
-        return None
-
-    @staticmethod
-    def _parse_location(text: str):
-        """Extract city, state, zip from text."""
-        match = re.search(r'([A-Za-z\s]+),\s*(TX|Texas)\s*(\d{5})?', text, re.I)
+    def _parse_location_field(raw: str):
+        """Parse 'City, TX 75001' into (city, state, zip)."""
+        match = re.search(r'([A-Za-z\s]+),\s*(TX|Texas)\s*(\d{5})?', raw, re.I)
         if match:
             return match.group(1).strip(), "TX", match.group(3) or ""
-        # Default to DFW area since Silva focuses on DFW
         return "", "TX", ""
 
     @staticmethod
-    def _extract_price(text: str) -> Optional[float]:
+    def _parse_price(text: str) -> Optional[float]:
+        """Parse price guidance like '$4,500,000' or 'TBD by Market'."""
         match = re.search(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:million|M)?', text, re.I)
         if match:
             raw = match.group(1).replace(",", "")
             val = float(raw)
-            if "million" in text[match.start():match.end() + 10].lower() or "M" in match.group(0):
+            rest = text[match.end():match.end() + 15].lower()
+            if "million" in rest or "m" in rest:
                 if val < 1000:
                     val *= 1_000_000
             return val
         return None
 
     @staticmethod
-    def _extract_units(text: str) -> Optional[int]:
-        match = re.search(r'(\d+)\s*[-\s]?\s*units?', text, re.I)
-        if match:
-            return int(match.group(1))
-        return None
-
-    @staticmethod
-    def _extract_year_built(text: str) -> Optional[int]:
-        match = re.search(r'(?:built|year\s*built|constructed|vintage)[:\s]*(\d{4})', text, re.I)
-        if match:
-            year = int(match.group(1))
-            if 1900 <= year <= 2030:
-                return year
-        return None
-
-    @staticmethod
-    def _extract_cap_rate(text: str) -> Optional[float]:
-        match = re.search(r'(?:cap\s*rate|cap)[:\s]*([\d.]+)\s*%', text, re.I)
-        if match:
-            return float(match.group(1))
-        return None
-
-    @staticmethod
-    def _extract_sqft(text: str) -> Optional[int]:
-        match = re.search(r'([\d,]+)\s*(?:sq\.?\s*ft|SF|square\s*feet)', text, re.I)
-        if match:
-            return int(match.group(1).replace(",", ""))
-        return None
+    def _safe_int(val: str) -> Optional[int]:
+        """Convert a string to int, stripping commas. Returns None on failure."""
+        try:
+            return int(val.replace(",", "").strip())
+        except (ValueError, AttributeError):
+            return None

@@ -19,6 +19,7 @@ from config import SEARCH_CRITERIA, FINANCIAL_CRITERIA, TRACKING, EMAIL_CONFIG
 from scrapers import (
     CrexiBrowserScraper, LoopNetScraper, RentCastScraper, ZillowScraper, RedfinScraper,
     BuildoutScraper, MultifamilyGroupScraper, SilvaMultifamilyScraper, IpaTexasScraper,
+    MarcusMillichapScraper,
 )
 from analyzers import FinancialAnalyzer, ClaudeAnalyzer, MarketCompAnalyzer
 from database import DealTracker
@@ -71,15 +72,16 @@ def run_agent() -> dict:
 
     # ── STEP 1: SCRAPE ─────────────────────────────────────────────────────────
     scrapers = [
-        ("buildout", BuildoutScraper()),     # Greysteel, SVN, Lee — open JSON API (WORKING)
-        # TODO: re-enable once fixed:
-        # ("multifamily_group", MultifamilyGroupScraper()),   # 403 blocked
-        # ("silva_multifamily", SilvaMultifamilyScraper()),   # 404 all pages
-        # ("ipa_texas", IpaTexasScraper()),                   # no cards found
-        # ("crexi", CrexiBrowserScraper()),     # login button not found
-        # ("loopnet", LoopNetScraper()),        # Akamai blocks detail fetch — use email alerts instead
-        # ("zillow", ZillowScraper()),          # API endpoint changed (404)
-        # ("redfin", RedfinScraper()),          # 0 results
+        ("buildout", BuildoutScraper()),              # Greysteel, SVN, Lee — open JSON API
+        ("redfin", RedfinScraper()),                  # Free public API — DFW bounding boxes
+        ("zillow", ZillowScraper()),                  # Direct scrape (RapidAPI dead)
+        ("marcus_millichap", MarcusMillichapScraper()),  # Sitecore content search API
+        ("multifamily_group", MultifamilyGroupScraper()),  # HTML scrape (plain requests)
+        ("ipa_texas", IpaTexasScraper()),              # Homepage slider cards
+        ("silva_multifamily", SilvaMultifamilyScraper()),  # /availableproperties page
+        # Still broken — need proxy or premium API:
+        # ("crexi", CrexiBrowserScraper()),     # needs working Playwright + login
+        # ("loopnet", LoopNetScraper()),        # Akamai blocks detail fetch
     ]
 
     all_listings = []
