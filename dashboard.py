@@ -9,10 +9,13 @@ Open: http://localhost:5050
 import sqlite3
 import json
 import os
+import threading
+import logging
 from datetime import datetime, timedelta
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
+logger = logging.getLogger("dashboard")
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deals.db")
 
 
@@ -474,6 +477,64 @@ TEMPLATE = """
 </body>
 </html>
 """
+
+
+@app.route("/health")
+def health():
+    """Health check endpoint (also keeps Render free tier awake)."""
+    return "ok", 200
+
+
+# ── BACKGROUND SCHEDULER ─────────────────────────────────────────────────────
+# Runs the deal agent on a schedule inside the same process.
+# This keeps everything in one Render service (free tier).
+
+def _run_bot_safe():
+    """Run the deal agent, catching all errors."""
+    try:
+        from main import run_agent
+        logger.info("Scheduled bot run starting...")
+        stats = run_agent()
+        logger.info(f"Scheduled bot run done: {stats.get('deals_found', 0)} found, {stats.get('deals_qualified', 0)} qualified")
+    except Exception as e:
+        logger.error(f"Scheduled bot run failed: {e}")
+
+
+def _start_scheduler():
+    """Background thread that runs the bot at 7am and 7pm UTC."""
+    import time
+    logger.info("Background scheduler started (7:00 and 19:00 UTC)")
+    # Run once on startup so the DB isn't empty
+    _run_bot_safe()
+    while True:
+        now = datetime.utcnow()
+        # Next target: 7:00 or 19:00 UTC
+        hour = now.hour
+        if hour < 7:
+            next_run = now.replace(hour=7, minute=0, second=0, microsecond=0)
+        elif hour < 19:
+            next_run = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        else:
+            next_run = (now + timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+        wait_seconds = (next_run - now).total_seconds()
+        logger.info(f"Next bot run at {next_run.strftime('%H:%M UTC')} (in {wait_seconds/3600:.1f}h)")
+        time.sleep(wait_seconds)
+        _run_bot_safe()
+
+
+_scheduler_started = False
+
+def start_scheduler_once():
+    global _scheduler_started
+    if not _scheduler_started:
+        _scheduler_started = True
+        t = threading.Thread(target=_start_scheduler, daemon=True)
+        t.start()
+
+
+# Start scheduler when running on Render (not in local debug mode)
+if os.environ.get("RENDER") or os.environ.get("START_SCHEDULER"):
+    start_scheduler_once()
 
 
 if __name__ == "__main__":
